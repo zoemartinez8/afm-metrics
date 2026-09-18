@@ -20,15 +20,26 @@ type CharMetric struct {
 	Name  string
 }
 
+// KerningPair is one entry from the KernPairs section of an AFM file, e.g.
+// "KPX A C -40": the amount to add to the advance width when the glyph
+// named First is immediately followed by the glyph named Second.
+type KerningPair struct {
+	First  string
+	Second string
+	Amount int // in 1/1000 units of the font's em square
+}
+
 // Font holds the metrics parsed from a single AFM file.
 type Font struct {
 	Name       string
 	FullName   string
 	FamilyName string
 	Chars      []CharMetric
+	Kerns      []KerningPair
 
-	byName map[string]int
-	byCode map[int]int
+	byName    map[string]int
+	byCode    map[int]int
+	kernIndex map[[2]string]int
 }
 
 // WidthOf returns the advance width of the glyph with the given PostScript
@@ -51,6 +62,18 @@ func (f *Font) WidthOfCode(code int) (int, bool) {
 	return f.Chars[i].Width, true
 }
 
+// KerningFor returns the kerning adjustment to apply when the glyph named
+// first is immediately followed by the glyph named second, in 1/1000 em
+// units. Kerning pairs are directional: a pair for ("A", "V") says nothing
+// about ("V", "A").
+func (f *Font) KerningFor(first, second string) (int, bool) {
+	i, ok := f.kernIndex[[2]string{first, second}]
+	if !ok {
+		return 0, false
+	}
+	return f.Kerns[i].Amount, true
+}
+
 // StringWidth sums the advance widths of s, treating each rune as a
 // character code in the font's encoding. This only gives correct results
 // for text within the font's built-in encoding (StandardEncoding for most
@@ -71,11 +94,12 @@ func (f *Font) StringWidth(s string) (int, error) {
 // malformed CharMetrics lines are returned as *ParseError, with the line and
 // column of the offending token.
 func Parse(r io.Reader) (*Font, error) {
-	font := &Font{byName: map[string]int{}, byCode: map[int]int{}}
+	font := &Font{byName: map[string]int{}, byCode: map[int]int{}, kernIndex: map[[2]string]int{}}
 
 	scanner := bufio.NewScanner(r)
 	lineNo := 0
 	inMetrics := false
+	inKerning := false
 
 	for scanner.Scan() {
 		lineNo++
@@ -90,6 +114,10 @@ func Parse(r io.Reader) (*Font, error) {
 			inMetrics = true
 		case strings.HasPrefix(trimmed, "EndCharMetrics"):
 			inMetrics = false
+		case strings.HasPrefix(trimmed, "StartKernPairs"):
+			inKerning = true
+		case strings.HasPrefix(trimmed, "EndKernPairs"):
+			inKerning = false
 		case strings.HasPrefix(trimmed, "FontName"):
 			font.Name = strings.TrimSpace(strings.TrimPrefix(trimmed, "FontName"))
 		case strings.HasPrefix(trimmed, "FullName"):
@@ -107,6 +135,14 @@ func Parse(r io.Reader) (*Font, error) {
 			if cm.Code >= 0 {
 				font.byCode[cm.Code] = idx
 			}
+		case inKerning && strings.HasPrefix(trimmed, "KPX "):
+			kp, err := parseKPXLine(line, lineNo)
+			if err != nil {
+				return nil, err
+			}
+			idx := len(font.Kerns)
+			font.Kerns = append(font.Kerns, kp)
+			font.kernIndex[[2]string{kp.First, kp.Second}] = idx
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -209,4 +245,49 @@ func parseCharMetricLine(line string, lineNo int) (CharMetric, error) {
 		return cm, newParseError(lineNo, baseCol, line, "character metric is missing an N (name) field")
 	}
 	return cm, nil
+}
+
+// splitWords breaks line into whitespace-separated tokens, along with the
+// 1-based column where each one starts. Unlike splitFields, KernPairs lines
+// have no ';' separators to key off of.
+func splitWords(line string) []field {
+	runes := []rune(line)
+	var words []field
+	i := 0
+	for i < len(runes) {
+		for i < len(runes) && (runes[i] == ' ' || runes[i] == '\t') {
+			i++
+		}
+		if i >= len(runes) {
+			break
+		}
+		start := i
+		for i < len(runes) && runes[i] != ' ' && runes[i] != '\t' {
+			i++
+		}
+		words = append(words, field{text: string(runes[start:i]), col: start + 1})
+	}
+	return words
+}
+
+// parseKPXLine parses a single "KPX <first> <second> <amount>" line from a
+// KernPairs section.
+func parseKPXLine(line string, lineNo int) (KerningPair, error) {
+	words := splitWords(line)
+	if len(words) < 4 {
+		col := 1
+		if len(words) > 0 {
+			col = words[0].col
+		}
+		return KerningPair{}, newParseError(lineNo, col, line,
+			"KPX requires two glyph names and a kerning amount")
+	}
+
+	amount, err := strconv.Atoi(words[3].text)
+	if err != nil {
+		return KerningPair{}, newParseError(lineNo, words[3].col, line,
+			fmt.Sprintf("invalid kerning amount %q: must be an integer", words[3].text))
+	}
+
+	return KerningPair{First: words[1].text, Second: words[2].text, Amount: amount}, nil
 }

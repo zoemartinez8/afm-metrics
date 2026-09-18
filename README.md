@@ -65,9 +65,10 @@ Broken.afm: line 4, column 8: invalid width "abc": must be an integer
 
 ## Scope
 
-The parser currently reads `FontName`, `FullName`, `FamilyName`, and the
-`CharMetrics` section (character code, width, and glyph name). Kerning
-pairs, composite glyphs, and the other header fields aren't parsed yet.
+The parser currently reads `FontName`, `FullName`, `FamilyName`, the
+`CharMetrics` section (character code, width, and glyph name), and the
+`KernPairs` section (`KPX` lines, by glyph name, via `Font.KerningFor`).
+Composite glyphs and the other header fields aren't parsed yet.
 
 `Font.StringWidth` treats each rune in the input as a character code
 directly, which is correct for ASCII text against the base-14 fonts'
