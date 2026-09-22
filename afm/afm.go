@@ -18,6 +18,20 @@ type CharMetric struct {
 	Code  int // font-internal character code, or -1 if unencoded
 	Width int // advance width, in 1/1000 units of the font's em square
 	Name  string
+
+	// Parts lists the components of a composite glyph, from the line's PCC
+	// fields, e.g. "Aacute" built from "A" plus "acute" at an offset. Empty
+	// for a simple (non-composite) glyph.
+	Parts []CompositePart
+}
+
+// CompositePart is one component of a composite glyph, from a PCC field
+// such as "PCC acute 195 0": place the glyph named acute at a 195/0 unit
+// offset from the composite's origin.
+type CompositePart struct {
+	Name   string
+	DeltaX int
+	DeltaY int
 }
 
 // KerningPair is one entry from the KernPairs section of an AFM file, e.g.
@@ -193,6 +207,9 @@ func parseCharMetricLine(line string, lineNo int) (CharMetric, error) {
 	cm := CharMetric{Code: -1}
 	haveWidth := false
 	haveName := false
+	haveCC := false
+	wantParts := 0
+	ccCol := 0
 
 	fields := splitFields(line)
 	baseCol := 1
@@ -235,6 +252,33 @@ func parseCharMetricLine(line string, lineNo int) (CharMetric, error) {
 			}
 			cm.Name = rest[0]
 			haveName = true
+		case "CC":
+			if len(rest) < 2 {
+				return cm, newParseError(lineNo, f.col, line, "CC requires a base glyph name and a part count")
+			}
+			n, err := strconv.Atoi(rest[1])
+			if err != nil {
+				return cm, newParseError(lineNo, fieldValueCol(f, rest[1]), line,
+					fmt.Sprintf("invalid composite part count %q: must be an integer", rest[1]))
+			}
+			haveCC = true
+			wantParts = n
+			ccCol = f.col
+		case "PCC":
+			if len(rest) < 3 {
+				return cm, newParseError(lineNo, f.col, line, "PCC requires a part name and an x/y displacement")
+			}
+			dx, err := strconv.Atoi(rest[1])
+			if err != nil {
+				return cm, newParseError(lineNo, fieldValueCol(f, rest[1]), line,
+					fmt.Sprintf("invalid x displacement %q: must be an integer", rest[1]))
+			}
+			dy, err := strconv.Atoi(rest[2])
+			if err != nil {
+				return cm, newParseError(lineNo, fieldValueCol(f, rest[2]), line,
+					fmt.Sprintf("invalid y displacement %q: must be an integer", rest[2]))
+			}
+			cm.Parts = append(cm.Parts, CompositePart{Name: rest[0], DeltaX: dx, DeltaY: dy})
 		}
 	}
 
@@ -243,6 +287,10 @@ func parseCharMetricLine(line string, lineNo int) (CharMetric, error) {
 	}
 	if !haveName {
 		return cm, newParseError(lineNo, baseCol, line, "character metric is missing an N (name) field")
+	}
+	if haveCC && len(cm.Parts) != wantParts {
+		return cm, newParseError(lineNo, ccCol, line,
+			fmt.Sprintf("CC declares %d composite part(s) but %d PCC field(s) follow", wantParts, len(cm.Parts)))
 	}
 	return cm, nil
 }
