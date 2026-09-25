@@ -48,8 +48,17 @@ type Font struct {
 	Name       string
 	FullName   string
 	FamilyName string
-	Chars      []CharMetric
-	Kerns      []KerningPair
+
+	// EncodingScheme is the AFM file's EncodingScheme field, e.g.
+	// "AdobeStandardEncoding" or "FontSpecific". StringWidth consults it
+	// to decide whether a rune should be resolved by glyph name (see
+	// GlyphName) or used as a raw character code: FontSpecific fonts
+	// (Symbol, dingbats, custom-built fonts) define their own meaning
+	// for each code, so there is no standard glyph name to map through.
+	EncodingScheme string
+
+	Chars []CharMetric
+	Kerns []KerningPair
 
 	byName    map[string]int
 	byCode    map[int]int
@@ -88,20 +97,38 @@ func (f *Font) KerningFor(first, second string) (int, bool) {
 	return f.Kerns[i].Amount, true
 }
 
-// StringWidth sums the advance widths of s, treating each rune as a
-// character code in the font's encoding. This only gives correct results
-// for text within the font's built-in encoding (StandardEncoding for most
-// base-14 fonts); it is not general Unicode shaping.
+// StringWidth sums the advance widths of s. This is not general Unicode
+// shaping: it only gives correct results for the glyphs the font actually
+// carries, resolved one rune at a time via widthOfRune.
 func (f *Font) StringWidth(s string) (int, error) {
 	total := 0
 	for _, r := range s {
-		w, ok := f.WidthOfCode(int(r))
+		w, ok := f.widthOfRune(r)
 		if !ok {
 			return 0, fmt.Errorf("no metric for %q (code %d) in font %s", r, r, f.Name)
 		}
 		total += w
 	}
 	return total, nil
+}
+
+// widthOfRune resolves r to a glyph and returns its advance width. Fonts
+// with a FontSpecific encoding define their own meaning for each character
+// code, so r is used as a raw code there, same as the AFM file's own C
+// field. Every other font is looked up through r's PostScript glyph name
+// instead, since character codes only agree with Unicode for plain ASCII.
+// If r has no known glyph name, or the font doesn't carry that glyph, this
+// falls back to treating r as a raw code, which still gives correct
+// results for ASCII text against StandardEncoding fonts.
+func (f *Font) widthOfRune(r rune) (int, bool) {
+	if f.EncodingScheme != "FontSpecific" {
+		if name, ok := GlyphName(r); ok {
+			if w, ok := f.WidthOf(name); ok {
+				return w, true
+			}
+		}
+	}
+	return f.WidthOfCode(int(r))
 }
 
 // Parse reads an AFM file from r and returns its font metrics. Errors from
@@ -138,6 +165,8 @@ func Parse(r io.Reader) (*Font, error) {
 			font.FullName = strings.TrimSpace(strings.TrimPrefix(trimmed, "FullName"))
 		case strings.HasPrefix(trimmed, "FamilyName"):
 			font.FamilyName = strings.TrimSpace(strings.TrimPrefix(trimmed, "FamilyName"))
+		case strings.HasPrefix(trimmed, "EncodingScheme"):
+			font.EncodingScheme = strings.TrimSpace(strings.TrimPrefix(trimmed, "EncodingScheme"))
 		case inMetrics && strings.HasPrefix(trimmed, "C "):
 			cm, err := parseCharMetricLine(line, lineNo)
 			if err != nil {

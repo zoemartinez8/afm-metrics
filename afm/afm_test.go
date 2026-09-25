@@ -147,3 +147,69 @@ func TestParseCompositeGlyphBadDisplacement(t *testing.T) {
 		t.Fatalf("Parse: error is not a *ParseError: %v", err)
 	}
 }
+
+const standardEncodingAFM = `StartFontMetrics 4.1
+FontName TestFont
+FullName Test Font
+FamilyName Test
+EncodingScheme AdobeStandardEncoding
+StartCharMetrics 3
+C 65 ; WX 722 ; N A ;
+C -1 ; WX 1000 ; N emdash ;
+C -1 ; WX 722 ; N eacute ;
+EndCharMetrics
+EndFontMetrics
+`
+
+func TestStringWidthResolvesByGlyphName(t *testing.T) {
+	font, err := Parse(strings.NewReader(standardEncodingAFM))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// U+2014 (em dash) and U+00E9 (e-acute) have no character code in the
+	// font at all: they're only reachable through their glyph names,
+	// "emdash" and "eacute".
+	got, err := font.StringWidth("A—é")
+	if err != nil {
+		t.Fatalf("StringWidth: %v", err)
+	}
+	if want := 722 + 1000 + 722; got != want {
+		t.Errorf("StringWidth = %d, want %d", got, want)
+	}
+}
+
+func TestStringWidthFontSpecificUsesRawCode(t *testing.T) {
+	src := strings.Replace(sampleAFM, "FamilyName Test", "FamilyName Test\nEncodingScheme FontSpecific", 1)
+	font, err := Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// U+2014 isn't code 65/66/67, so a FontSpecific font (which has no
+	// standard glyph names to fall back on) must report it as missing
+	// rather than silently resolving it through GlyphName.
+	if _, err := font.StringWidth("—"); err == nil {
+		t.Fatal("StringWidth: expected error for code with no metric in FontSpecific font, got nil")
+	}
+}
+
+func TestGlyphName(t *testing.T) {
+	tests := []struct {
+		r    rune
+		want string
+	}{
+		{'A', "A"}, {'\'', "quoteright"}, {'`', "quoteleft"},
+		{'—', "emdash"}, {'•', "bullet"}, {'é', "eacute"},
+	}
+	for _, tt := range tests {
+		got, ok := GlyphName(tt.r)
+		if !ok || got != tt.want {
+			t.Errorf("GlyphName(%q) = %q, %v, want %q, true", tt.r, got, ok, tt.want)
+		}
+	}
+
+	if _, ok := GlyphName('中'); ok {
+		t.Error("GlyphName(中): expected no mapping, got one")
+	}
+}

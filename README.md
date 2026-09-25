@@ -65,15 +65,20 @@ Broken.afm: line 4, column 8: invalid width "abc": must be an integer
 
 ## Scope
 
-The parser currently reads `FontName`, `FullName`, `FamilyName`, the
-`CharMetrics` section (character code, width, glyph name, and composite
-glyphs via `CC`/`PCC`, exposed as `CharMetric.Parts`), and the `KernPairs`
-section (`KPX` lines, by glyph name, via `Font.KerningFor`). The other
-header fields aren't parsed yet.
+The parser currently reads `FontName`, `FullName`, `FamilyName`,
+`EncodingScheme`, the `CharMetrics` section (character code, width, glyph
+name, and composite glyphs via `CC`/`PCC`, exposed as `CharMetric.Parts`),
+and the `KernPairs` section (`KPX` lines, by glyph name, via
+`Font.KerningFor`). The other header fields aren't parsed yet.
 
-`Font.StringWidth` treats each rune in the input as a character code
-directly, which is correct for ASCII text against the base-14 fonts'
-StandardEncoding but not a general Unicode encoding mapping.
+`Font.StringWidth` resolves each rune to a PostScript glyph name (see
+`afm.GlyphName`) and looks it up by name, which is what makes typographic
+punctuation (em dashes, curly quotes) and accented Latin letters resolve
+correctly even though their Unicode code points don't match the font's own
+character codes. Fonts with a `FontSpecific` encoding, or runes with no
+known glyph name, fall back to using the rune's numeric value as a raw
+character code; this is still not general Unicode shaping, just enough to
+cover what the base-14 fonts actually carry.
 
 ## License
 
